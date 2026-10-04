@@ -37,11 +37,17 @@ import {
   UserPlus,
   User,
   Edit,
-  Search
+  Search,
+  Crop,
+  Scissors,
+  Maximize2,
+  Minimize2,
+  Move,
+  Square
 } from "lucide-react";
 import { doc, setDoc, onSnapshot, collection, getDocs, deleteDoc } from "firebase/firestore";
 import { db } from "./firebase";
-import { AppConfig, AuthMode } from "./types";
+import { AppConfig, AuthMode, CropRect } from "./types";
 import { AnimatePresence, motion } from "motion/react";
 
 // State defaults
@@ -395,6 +401,162 @@ export default function App() {
     }
   };
 
+  // Screen Share Crop States & Engine
+  const [cropEnabled, setCropEnabled] = useState<boolean>(false);
+  const [cropRect, setCropRect] = useState<CropRect>({ x: 10, y: 10, width: 80, height: 80 });
+  const [showCropModal, setShowCropModal] = useState<boolean>(false);
+  const [cropDragMode, setCropDragMode] = useState<string | null>(null);
+
+  const rawStreamRef = React.useRef<MediaStream | null>(null);
+  const rawVideoRef = React.useRef<HTMLVideoElement | null>(null);
+  const canvasRef = React.useRef<HTMLCanvasElement | null>(null);
+  const animationFrameIdRef = React.useRef<number | null>(null);
+  const cropSettingsRef = React.useRef<{ enabled: boolean; rect: CropRect }>({
+    enabled: false,
+    rect: { x: 10, y: 10, width: 80, height: 80 }
+  });
+  const cropContainerRef = React.useRef<HTMLDivElement | null>(null);
+  const cropDragStartRef = React.useRef<{
+    startX: number;
+    startY: number;
+    startRect: CropRect;
+    containerWidth: number;
+    containerHeight: number;
+  } | null>(null);
+
+  // Synchronize mutable ref for zero-latency frame canvas rendering
+  useEffect(() => {
+    cropSettingsRef.current = {
+      enabled: cropEnabled,
+      rect: cropRect
+    };
+  }, [cropEnabled, cropRect]);
+
+  // Pointer drag/resize handler for interactive visual crop box
+  const handleCropPointerDown = (mode: string, e: React.PointerEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!cropContainerRef.current) return;
+    const rect = cropContainerRef.current.getBoundingClientRect();
+    cropDragStartRef.current = {
+      startX: e.clientX,
+      startY: e.clientY,
+      startRect: { ...cropRect },
+      containerWidth: rect.width,
+      containerHeight: rect.height,
+    };
+    setCropDragMode(mode);
+    try {
+      (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    } catch (err) {}
+  };
+
+  const handleCropPointerMove = (e: React.PointerEvent) => {
+    if (!cropDragMode || !cropDragStartRef.current) return;
+    e.preventDefault();
+    const { startX, startY, startRect, containerWidth, containerHeight } = cropDragStartRef.current;
+    if (containerWidth <= 0 || containerHeight <= 0) return;
+
+    const dxPct = ((e.clientX - startX) / containerWidth) * 100;
+    const dyPct = ((e.clientY - startY) / containerHeight) * 100;
+
+    setCropRect(() => {
+      let newX = startRect.x;
+      let newY = startRect.y;
+      let newW = startRect.width;
+      let newH = startRect.height;
+
+      if (cropDragMode === "move") {
+        newX = Math.max(0, Math.min(100 - startRect.width, startRect.x + dxPct));
+        newY = Math.max(0, Math.min(100 - startRect.height, startRect.y + dyPct));
+      } else if (cropDragMode === "se") {
+        newW = Math.max(10, Math.min(100 - startRect.x, startRect.width + dxPct));
+        newH = Math.max(10, Math.min(100 - startRect.y, startRect.height + dyPct));
+      } else if (cropDragMode === "sw") {
+        const maxShift = startRect.x;
+        const shiftX = Math.max(-maxShift, Math.min(startRect.width - 10, dxPct));
+        newX = startRect.x + shiftX;
+        newW = startRect.width - shiftX;
+        newH = Math.max(10, Math.min(100 - startRect.y, startRect.height + dyPct));
+      } else if (cropDragMode === "ne") {
+        newW = Math.max(10, Math.min(100 - startRect.x, startRect.width + dxPct));
+        const maxShift = startRect.y;
+        const shiftY = Math.max(-maxShift, Math.min(startRect.height - 10, dyPct));
+        newY = startRect.y + shiftY;
+        newH = startRect.height - shiftY;
+      } else if (cropDragMode === "nw") {
+        const maxShiftX = startRect.x;
+        const shiftX = Math.max(-maxShiftX, Math.min(startRect.width - 10, dxPct));
+        newX = startRect.x + shiftX;
+        newW = startRect.width - shiftX;
+        const maxShiftY = startRect.y;
+        const shiftY = Math.max(-maxShiftY, Math.min(startRect.height - 10, dyPct));
+        newY = startRect.y + shiftY;
+        newH = startRect.height - shiftY;
+      } else if (cropDragMode === "n") {
+        const maxShift = startRect.y;
+        const shiftY = Math.max(-maxShift, Math.min(startRect.height - 10, dyPct));
+        newY = startRect.y + shiftY;
+        newH = startRect.height - shiftY;
+      } else if (cropDragMode === "s") {
+        newH = Math.max(10, Math.min(100 - startRect.y, startRect.height + dyPct));
+      } else if (cropDragMode === "w") {
+        const maxShift = startRect.x;
+        const shiftX = Math.max(-maxShift, Math.min(startRect.width - 10, dxPct));
+        newX = startRect.x + shiftX;
+        newW = startRect.width - shiftX;
+      } else if (cropDragMode === "e") {
+        newW = Math.max(10, Math.min(100 - startRect.x, startRect.width + dxPct));
+      }
+
+      return {
+        x: Math.round(newX * 10) / 10,
+        y: Math.round(newY * 10) / 10,
+        width: Math.round(newW * 10) / 10,
+        height: Math.round(newH * 10) / 10,
+      };
+    });
+  };
+
+  const handleCropPointerUp = (e: React.PointerEvent) => {
+    if (cropDragMode) {
+      try {
+        (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
+      } catch (err) {}
+      setCropDragMode(null);
+      cropDragStartRef.current = null;
+    }
+  };
+
+  const applyCropPreset = (type: "full" | "center80" | "center60" | "topHalf" | "bottomHalf" | "leftHalf" | "rightHalf") => {
+    if (type === "full") {
+      setCropEnabled(false);
+      setCropRect({ x: 0, y: 0, width: 100, height: 100 });
+      addLog("info", "CROP_PRESET - Reset screen share to Full Screen 100%");
+    } else {
+      setCropEnabled(true);
+      if (type === "center80") {
+        setCropRect({ x: 10, y: 10, width: 80, height: 80 });
+        addLog("info", "CROP_PRESET - Applied Center Focus 80% region");
+      } else if (type === "center60") {
+        setCropRect({ x: 20, y: 20, width: 60, height: 60 });
+        addLog("info", "CROP_PRESET - Applied Center Focus 60% region");
+      } else if (type === "topHalf") {
+        setCropRect({ x: 0, y: 0, width: 100, height: 50 });
+        addLog("info", "CROP_PRESET - Applied Top Half 50% region");
+      } else if (type === "bottomHalf") {
+        setCropRect({ x: 0, y: 50, width: 100, height: 50 });
+        addLog("info", "CROP_PRESET - Applied Bottom Half 50% region");
+      } else if (type === "leftHalf") {
+        setCropRect({ x: 0, y: 0, width: 50, height: 100 });
+        addLog("info", "CROP_PRESET - Applied Left Half region");
+      } else if (type === "rightHalf") {
+        setCropRect({ x: 50, y: 0, width: 50, height: 100 });
+        addLog("info", "CROP_PRESET - Applied Right Half region");
+      }
+    }
+  };
+
   // Render floating overlay on top of screen share feeds
   const renderFloatingOverlay = () => {
     if (!config?.overlayEnabled) return null;
@@ -532,10 +694,91 @@ export default function App() {
       }
 
       addLog("info", `STREAM_INIT - Requesting screen capture using profile: ${streamQualityProfile}`);
-      const stream = await navigator.mediaDevices.getDisplayMedia(displayMediaOptions);
-      setLocalStream(stream);
+      const rawStream = await navigator.mediaDevices.getDisplayMedia(displayMediaOptions);
+      rawStreamRef.current = rawStream;
+
+      // Set up hidden player element for raw feed
+      if (!rawVideoRef.current) {
+        const vid = document.createElement("video");
+        vid.muted = true;
+        vid.playsInline = true;
+        vid.autoplay = true;
+        rawVideoRef.current = vid;
+      }
+      rawVideoRef.current.srcObject = rawStream;
+      await rawVideoRef.current.play().catch(e => console.warn("Raw video autoplay:", e));
+
+      // Set up canvas element for crop and frame extraction
+      if (!canvasRef.current) {
+        const cvs = document.createElement("canvas");
+        canvasRef.current = cvs;
+      }
+
+      const canvas = canvasRef.current;
+      const rawVideo = rawVideoRef.current;
+      canvas.width = rawVideo.videoWidth || 1280;
+      canvas.height = rawVideo.videoHeight || 720;
+
+      // Real-time canvas render loop applying crop boundaries
+      const renderCropFrame = () => {
+        if (!rawVideoRef.current || !canvasRef.current) return;
+        const vid = rawVideoRef.current;
+        const cvs = canvasRef.current;
+        const ctx = cvs.getContext("2d");
+
+        if (ctx && vid.readyState >= 2) {
+          const vW = vid.videoWidth || 1280;
+          const vH = vid.videoHeight || 720;
+          const { enabled, rect } = cropSettingsRef.current;
+
+          if (enabled) {
+            const normX = Math.max(0, Math.min(95, rect.x));
+            const normY = Math.max(0, Math.min(95, rect.y));
+            const normW = Math.max(5, Math.min(100 - normX, rect.width));
+            const normH = Math.max(5, Math.min(100 - normY, rect.height));
+
+            const sx = Math.floor((normX / 100) * vW);
+            const sy = Math.floor((normY / 100) * vH);
+            const sw = Math.max(1, Math.floor((normW / 100) * vW));
+            const sh = Math.max(1, Math.floor((normH / 100) * vH));
+
+            if (cvs.width !== sw || cvs.height !== sh) {
+              cvs.width = sw;
+              cvs.height = sh;
+            }
+            ctx.imageSmoothingEnabled = true;
+            ctx.imageSmoothingQuality = "high";
+            ctx.drawImage(vid, sx, sy, sw, sh, 0, 0, sw, sh);
+          } else {
+            if (cvs.width !== vW || cvs.height !== vH) {
+              cvs.width = vW;
+              cvs.height = vH;
+            }
+            ctx.drawImage(vid, 0, 0, vW, vH, 0, 0, vW, vH);
+          }
+        }
+
+        animationFrameIdRef.current = requestAnimationFrame(renderCropFrame);
+      };
+
+      if (animationFrameIdRef.current) {
+        cancelAnimationFrame(animationFrameIdRef.current);
+      }
+      animationFrameIdRef.current = requestAnimationFrame(renderCropFrame);
+
+      // Create stream from canvas
+      const targetFps = streamQualityProfile === "slides-1080p" ? 15 : 30;
+      const canvasStream: MediaStream = (canvas as any).captureStream ? (canvas as any).captureStream(targetFps) : rawStream;
+
+      // Transfer any audio tracks from original screen share (e.g. tab audio, system sound)
+      rawStream.getAudioTracks().forEach((audioTrack) => {
+        canvasStream.addTrack(audioTrack);
+      });
+
+      const broadcastStream = canvasStream;
+      setLocalStream(broadcastStream);
       setIsBroadcasting(true);
-      addLog("success", `STREAM_LIVE - Started Direct Chrome Screen Cast (${streamQualityProfile})`);
+      addLog("success", `STREAM_LIVE - Started Direct Chrome Screen Cast (${streamQualityProfile}${cropEnabled ? ", Cropped" : ""})`);
 
       // Mark configs/main as live
       const configDocRef = doc(db, "configs", "main");
@@ -566,8 +809,8 @@ export default function App() {
               peerConnectionMap[peerDocId] = pc;
 
               // Append local capture audio & video tracks with optimization parameters
-              stream.getTracks().forEach((track) => {
-                const sender = pc.addTrack(track, stream);
+              broadcastStream.getTracks().forEach((track) => {
+                const sender = pc.addTrack(track, broadcastStream);
                 
                 if (track.kind === "video") {
                   try {
@@ -650,8 +893,8 @@ export default function App() {
       });
 
       // Track stream end from browser button (e.g., screen share stop)
-      if (stream.getVideoTracks()[0]) {
-        stream.getVideoTracks()[0].onended = () => {
+      if (rawStream.getVideoTracks()[0]) {
+        rawStream.getVideoTracks()[0].onended = () => {
           stopBroadcast();
         };
       }
@@ -668,6 +911,17 @@ export default function App() {
   const stopBroadcast = async () => {
     try {
       setIsBroadcasting(false);
+      if (animationFrameIdRef.current) {
+        cancelAnimationFrame(animationFrameIdRef.current);
+        animationFrameIdRef.current = null;
+      }
+      if (rawStreamRef.current) {
+        rawStreamRef.current.getTracks().forEach((track) => track.stop());
+        rawStreamRef.current = null;
+      }
+      if (rawVideoRef.current) {
+        rawVideoRef.current.srcObject = null;
+      }
       if (localStream) {
         localStream.getTracks().forEach((track) => track.stop());
         setLocalStream(null);
@@ -2173,6 +2427,98 @@ export default function App() {
                         </div>
                       </div>
 
+                      {/* Live Screen Cropping & Area Focus Widget */}
+                      <div className="bg-[#0D1117] border border-[#30363D] p-3 rounded-lg space-y-2.5">
+                        <div className="flex items-center justify-between">
+                          <label className="text-[10px] font-bold text-[#8B949E] uppercase tracking-wider flex items-center gap-1.5">
+                            <Crop className="h-3.5 w-3.5 text-cyan-400" />
+                            <span>Crop Screen Region</span>
+                          </label>
+                          <div className="flex items-center gap-2">
+                            <span className={`text-[9px] font-mono px-1.5 py-0.5 rounded font-bold uppercase ${
+                              cropEnabled ? "bg-cyan-950 text-cyan-300 border border-cyan-800/60" : "bg-[#161B22] text-[#8B949E]"
+                            }`}>
+                              {cropEnabled ? `${cropRect.width.toFixed(0)}% × ${cropRect.height.toFixed(0)}%` : "Full Screen"}
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setCropEnabled(!cropEnabled);
+                                addLog("info", `CROP_TOGGLE - Turned screen crop ${!cropEnabled ? "ON" : "OFF"}`);
+                              }}
+                              className={`relative inline-flex h-4 w-8 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
+                                cropEnabled ? "bg-cyan-500" : "bg-neutral-800"
+                              }`}
+                            >
+                              <span
+                                className={`pointer-events-none inline-block h-3 w-3 transform rounded-full bg-white shadow-lg ring-0 transition duration-200 ease-in-out ${
+                                  cropEnabled ? "translate-x-4" : "translate-x-0"
+                                }`}
+                              />
+                            </button>
+                          </div>
+                        </div>
+
+                        <p className="text-[10px] text-slate-500 leading-tight">
+                          Show only what you want to share. Areas outside the crop box (taskbars, private tabs, notifications) will be hidden from viewers in real time.
+                        </p>
+
+                        {/* Interactive Visual Selector Button */}
+                        <div className="flex gap-1.5">
+                          <button
+                            type="button"
+                            onClick={() => setShowCropModal(true)}
+                            className="flex-1 py-1.5 px-2.5 bg-cyan-950/40 hover:bg-cyan-900/40 border border-cyan-800/50 hover:border-cyan-500/80 text-cyan-300 hover:text-white rounded text-[10px] font-mono font-bold tracking-wider uppercase transition cursor-pointer flex items-center justify-center gap-1.5"
+                          >
+                            <Crop className="h-3.5 w-3.5" />
+                            <span>Visual Crop Region Selector</span>
+                          </button>
+                          {cropEnabled && (
+                            <button
+                              type="button"
+                              onClick={() => applyCropPreset("full")}
+                              className="px-2 py-1.5 bg-[#161B22] hover:bg-neutral-800 text-[#8B949E] hover:text-white border border-[#30363D] rounded text-[10px] font-mono font-bold tracking-wider uppercase transition cursor-pointer"
+                              title="Reset to Full Screen"
+                            >
+                              Reset
+                            </button>
+                          )}
+                        </div>
+
+                        {/* Quick Crop Presets */}
+                        <div className="space-y-1 pt-1 border-t border-[#30363D]/40">
+                          <div className="text-[9px] text-[#8B949E] uppercase font-mono font-semibold flex justify-between">
+                            <span>Quick Presets</span>
+                            {cropEnabled && <span className="text-cyan-400">X:{cropRect.x.toFixed(0)}% Y:{cropRect.y.toFixed(0)}%</span>}
+                          </div>
+                          <div className="grid grid-cols-4 gap-1">
+                            {[
+                              { id: "full", label: "Full 100%", type: "full" as const },
+                              { id: "center80", label: "Center 80%", type: "center80" as const },
+                              { id: "center60", label: "Center 60%", type: "center60" as const },
+                              { id: "topHalf", label: "Top 50%", type: "topHalf" as const },
+                              { id: "bottomHalf", label: "Bottom 50%", type: "bottomHalf" as const },
+                              { id: "leftHalf", label: "Left 50%", type: "leftHalf" as const },
+                              { id: "rightHalf", label: "Right 50%", type: "rightHalf" as const },
+                            ].map((preset) => (
+                              <button
+                                key={preset.id}
+                                type="button"
+                                onClick={() => applyCropPreset(preset.type)}
+                                className={`py-1 px-1 rounded text-[9px] font-mono font-bold transition cursor-pointer text-center border truncate ${
+                                  (!cropEnabled && preset.type === "full") ||
+                                  (cropEnabled && preset.type === "center80" && cropRect.width === 80 && cropRect.height === 80)
+                                    ? "bg-cyan-600 border-cyan-400 text-white shadow"
+                                    : "bg-[#161B22] border-[#30363D] text-[#8B949E] hover:border-slate-500 hover:text-white"
+                                }`}
+                              >
+                                {preset.label}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      </div>
+
                       <button
                         type="button"
                         onClick={isBroadcasting ? stopBroadcast : startBroadcast}
@@ -2857,8 +3203,26 @@ export default function App() {
                           <span className="h-1.5 w-1.5 rounded-full bg-white"></span>
                           <span>CHROME DIRECT CAST FEED LIVE</span>
                         </div>
+
+                        {/* Top-Right Crop Quick Adjust Button */}
+                        <div className="absolute top-4 right-4 flex items-center gap-2 z-10">
+                          <button
+                            type="button"
+                            onClick={() => setShowCropModal(true)}
+                            className={`px-2.5 py-1 rounded font-mono text-[10px] font-bold uppercase transition flex items-center gap-1.5 shadow-lg cursor-pointer ${
+                              cropEnabled
+                                ? "bg-cyan-950/90 text-cyan-300 border border-cyan-500/80 hover:bg-cyan-900/90"
+                                : "bg-black/70 text-slate-300 border border-white/20 hover:bg-black/90 hover:text-white"
+                            }`}
+                            title="Open Crop Region Selector"
+                          >
+                            <Crop className="h-3.5 w-3.5 text-cyan-400" />
+                            <span>{cropEnabled ? `Crop: ${cropRect.width.toFixed(0)}% × ${cropRect.height.toFixed(0)}%` : "Crop: Off (Full)"}</span>
+                          </button>
+                        </div>
+
                         <video
-                          className="w-full h-full object-cover bg-black"
+                          className="w-full h-full object-contain bg-black"
                           autoPlay
                           playsInline
                           muted
@@ -3324,6 +3688,379 @@ export default function App() {
           </div>
         )}
       </AnimatePresence>
+
+      {/* Visual Screen Share Crop Region Selector Modal */}
+      <AnimatePresence>
+        {showCropModal && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-6 bg-black/85 backdrop-blur-sm select-none">
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.95 }}
+              className="bg-[#161B22] border border-[#30363D] rounded-xl max-w-4xl w-full shadow-2xl overflow-hidden flex flex-col max-h-[92vh]"
+            >
+              {/* Modal Header */}
+              <div className="bg-[#1C2128] px-5 py-3 border-b border-[#30363D] flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <div className="p-1.5 bg-cyan-950/60 border border-cyan-800/60 rounded-md text-cyan-400">
+                    <Crop className="h-4 w-4" />
+                  </div>
+                  <div>
+                    <h3 className="text-xs sm:text-sm font-bold text-white uppercase tracking-wider">
+                      Screen Share Crop & Privacy Region
+                    </h3>
+                    <p className="text-[10px] text-[#8B949E] font-mono">
+                      Drag or resize the cyan box to show only what you choose. Outside area is hidden from viewers.
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowCropModal(false)}
+                  className="p-1 text-[#8B949E] hover:text-white rounded hover:bg-[#30363D]/50 transition cursor-pointer text-xs font-mono"
+                >
+                  ✕ Close
+                </button>
+              </div>
+
+              {/* Modal Content */}
+              <div className="p-4 sm:p-5 overflow-y-auto space-y-4 font-mono text-xs">
+                {/* Visual Draggable/Resizable Crop Canvas Container */}
+                <div className="space-y-1.5">
+                  <div className="flex items-center justify-between text-[11px]">
+                    <span className="text-[#8B949E] font-bold uppercase tracking-wider flex items-center gap-1.5">
+                      <Move className="h-3.5 w-3.5 text-cyan-400" />
+                      Interactive Crop Selector (Drag box or handles to resize)
+                    </span>
+                    <span className="text-cyan-400 font-bold bg-[#0D1117] px-2 py-0.5 rounded border border-[#30363D]">
+                      Active: {cropRect.width.toFixed(0)}% × {cropRect.height.toFixed(0)}% (X: {cropRect.x.toFixed(0)}%, Y: {cropRect.y.toFixed(0)}%)
+                    </span>
+                  </div>
+
+                  {/* Interactive Crop Frame Area */}
+                  <div
+                    ref={cropContainerRef}
+                    onPointerMove={handleCropPointerMove}
+                    onPointerUp={handleCropPointerUp}
+                    className="relative w-full aspect-video bg-[#0D1117] border-2 border-[#30363D] rounded-lg overflow-hidden select-none touch-none cursor-crosshair shadow-inner"
+                  >
+                    {/* Background Feed: Raw Screen capture if active, else simulated desktop template */}
+                    {isBroadcasting && rawStreamRef.current ? (
+                      <video
+                        className="w-full h-full object-fill pointer-events-none"
+                        autoPlay
+                        playsInline
+                        muted
+                        ref={(el) => {
+                          if (el && rawStreamRef.current && el.srcObject !== rawStreamRef.current) {
+                            el.srcObject = rawStreamRef.current;
+                          }
+                        }}
+                      />
+                    ) : (
+                      <div className="w-full h-full flex flex-col justify-between p-4 bg-[radial-gradient(#30363D_1px,transparent_1px)] [background-size:16px_16px] pointer-events-none opacity-60">
+                        <div className="flex justify-between items-center text-[10px] text-slate-500">
+                          <span>[Sample Screen: 1920 × 1080 Full Display]</span>
+                          <span>Broadcast not live yet (Pre-setting region)</span>
+                        </div>
+                        <div className="border border-slate-700/50 rounded-md p-6 bg-black/40 text-center max-w-sm mx-auto space-y-2">
+                          <p className="text-white text-xs font-bold">Screen Share Preview Area</p>
+                          <p className="text-[10px] text-slate-400">
+                            When you start screen share, your live desktop will stream here in real-time.
+                          </p>
+                        </div>
+                        <div className="text-[9px] text-slate-600 text-right">Taskbar & system clock area (Hidden if cropped)</div>
+                      </div>
+                    )}
+
+                    {/* Shaded Masks (Dim areas outside the crop box) */}
+                    {cropEnabled && (
+                      <>
+                        {/* Top mask */}
+                        <div
+                          className="absolute bg-black/75 backdrop-blur-[1px] pointer-events-none transition-all duration-75"
+                          style={{ top: 0, left: 0, right: 0, height: `${cropRect.y}%` }}
+                        />
+                        {/* Bottom mask */}
+                        <div
+                          className="absolute bg-black/75 backdrop-blur-[1px] pointer-events-none transition-all duration-75"
+                          style={{
+                            top: `${cropRect.y + cropRect.height}%`,
+                            left: 0,
+                            right: 0,
+                            bottom: 0,
+                          }}
+                        />
+                        {/* Left mask */}
+                        <div
+                          className="absolute bg-black/75 backdrop-blur-[1px] pointer-events-none transition-all duration-75"
+                          style={{
+                            top: `${cropRect.y}%`,
+                            left: 0,
+                            width: `${cropRect.x}%`,
+                            height: `${cropRect.height}%`,
+                          }}
+                        />
+                        {/* Right mask */}
+                        <div
+                          className="absolute bg-black/75 backdrop-blur-[1px] pointer-events-none transition-all duration-75"
+                          style={{
+                            top: `${cropRect.y}%`,
+                            left: `${cropRect.x + cropRect.width}%`,
+                            right: 0,
+                            height: `${cropRect.height}%`,
+                          }}
+                        />
+                      </>
+                    )}
+
+                    {/* The Crop Box */}
+                    <div
+                      onPointerDown={(e) => handleCropPointerDown("move", e)}
+                      style={{
+                        left: `${cropRect.x}%`,
+                        top: `${cropRect.y}%`,
+                        width: `${cropRect.width}%`,
+                        height: `${cropRect.height}%`,
+                      }}
+                      className={`absolute cursor-move transition-[box-shadow] duration-150 ${
+                        cropEnabled
+                          ? "border-2 border-cyan-400 shadow-[0_0_20px_rgba(34,211,238,0.5),inset_0_0_15px_rgba(34,211,238,0.15)]"
+                          : "border-2 border-dashed border-slate-500/60"
+                      }`}
+                    >
+                      {/* Center label badge */}
+                      <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 pointer-events-none bg-black/80 text-cyan-300 border border-cyan-500/40 rounded px-2 py-0.5 text-[9px] font-bold whitespace-nowrap flex items-center gap-1 shadow-md">
+                        <Crop className="h-2.5 w-2.5" />
+                        <span>
+                          {cropEnabled ? `BROADCAST REGION: ${cropRect.width.toFixed(0)}% × ${cropRect.height.toFixed(0)}%` : "FULL SCREEN"}
+                        </span>
+                      </div>
+
+                      {/* Rule of Thirds subtle grid inside crop box */}
+                      <div className="absolute inset-0 pointer-events-none opacity-20">
+                        <div className="w-full h-full grid grid-cols-3 grid-rows-3">
+                          <div className="border-r border-b border-cyan-300"></div>
+                          <div className="border-r border-b border-cyan-300"></div>
+                          <div className="border-b border-cyan-300"></div>
+                          <div className="border-r border-b border-cyan-300"></div>
+                          <div className="border-r border-b border-cyan-300"></div>
+                          <div className="border-b border-cyan-300"></div>
+                          <div className="border-r border-cyan-300"></div>
+                          <div className="border-r border-cyan-300"></div>
+                          <div></div>
+                        </div>
+                      </div>
+
+                      {/* 4 Corner Resize Handles */}
+                      <div
+                        onPointerDown={(e) => handleCropPointerDown("nw", e)}
+                        className="absolute -top-1.5 -left-1.5 w-4 h-4 bg-cyan-400 border border-black rounded-xs cursor-nwse-resize hover:scale-125 transition-transform"
+                        title="Resize Top-Left"
+                      />
+                      <div
+                        onPointerDown={(e) => handleCropPointerDown("ne", e)}
+                        className="absolute -top-1.5 -right-1.5 w-4 h-4 bg-cyan-400 border border-black rounded-xs cursor-nesw-resize hover:scale-125 transition-transform"
+                        title="Resize Top-Right"
+                      />
+                      <div
+                        onPointerDown={(e) => handleCropPointerDown("sw", e)}
+                        className="absolute -bottom-1.5 -left-1.5 w-4 h-4 bg-cyan-400 border border-black rounded-xs cursor-nesw-resize hover:scale-125 transition-transform"
+                        title="Resize Bottom-Left"
+                      />
+                      <div
+                        onPointerDown={(e) => handleCropPointerDown("se", e)}
+                        className="absolute -bottom-1.5 -right-1.5 w-4 h-4 bg-cyan-400 border border-black rounded-xs cursor-nwse-resize hover:scale-125 transition-transform"
+                        title="Resize Bottom-Right"
+                      />
+
+                      {/* 4 Edge Resize Handles */}
+                      <div
+                        onPointerDown={(e) => handleCropPointerDown("n", e)}
+                        className="absolute -top-1 left-1/2 -translate-x-1/2 w-8 h-2 bg-cyan-400/80 rounded-xs cursor-ns-resize hover:bg-cyan-300"
+                        title="Resize Top Edge"
+                      />
+                      <div
+                        onPointerDown={(e) => handleCropPointerDown("s", e)}
+                        className="absolute -bottom-1 left-1/2 -translate-x-1/2 w-8 h-2 bg-cyan-400/80 rounded-xs cursor-ns-resize hover:bg-cyan-300"
+                        title="Resize Bottom Edge"
+                      />
+                      <div
+                        onPointerDown={(e) => handleCropPointerDown("w", e)}
+                        className="absolute top-1/2 -left-1 -translate-y-1/2 w-2 h-8 bg-cyan-400/80 rounded-xs cursor-ew-resize hover:bg-cyan-300"
+                        title="Resize Left Edge"
+                      />
+                      <div
+                        onPointerDown={(e) => handleCropPointerDown("e", e)}
+                        className="absolute top-1/2 -right-1 -translate-y-1/2 w-2 h-8 bg-cyan-400/80 rounded-xs cursor-ew-resize hover:bg-cyan-300"
+                        title="Resize Right Edge"
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                {/* Quick Presets & Toggle Section */}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 bg-[#0D1117] border border-[#30363D] p-3.5 rounded-lg">
+                  {/* Enable Switch and Presets */}
+                  <div className="space-y-2.5">
+                    <div className="flex items-center justify-between">
+                      <label className="text-[11px] font-bold text-white uppercase tracking-wider flex items-center gap-1.5">
+                        <Crop className="h-3.5 w-3.5 text-cyan-400" />
+                        <span>Screen Share Cropping</span>
+                      </label>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setCropEnabled(!cropEnabled);
+                          addLog("info", `CROP_TOGGLE - Turned screen crop ${!cropEnabled ? "ON" : "OFF"}`);
+                        }}
+                        className={`px-3 py-1 rounded text-[10px] font-bold tracking-wider uppercase transition cursor-pointer flex items-center gap-1.5 border ${
+                          cropEnabled
+                            ? "bg-cyan-600 border-cyan-500 text-white shadow"
+                            : "bg-[#161B22] border-[#30363D] text-[#8B949E] hover:text-white"
+                        }`}
+                      >
+                        <span className={`h-1.5 w-1.5 rounded-full ${cropEnabled ? "bg-white animate-pulse" : "bg-slate-500"}`}></span>
+                        <span>{cropEnabled ? "Crop ACTIVE" : "Crop DISABLED (Full)"}</span>
+                      </button>
+                    </div>
+
+                    <div className="space-y-1">
+                      <span className="text-[9px] text-[#8B949E] uppercase font-bold">1-Click Region Presets:</span>
+                      <div className="grid grid-cols-3 gap-1.5">
+                        {[
+                          { id: "full", label: "Full 100%", type: "full" as const },
+                          { id: "center80", label: "Center 80%", type: "center80" as const },
+                          { id: "center60", label: "Center 60%", type: "center60" as const },
+                          { id: "topHalf", label: "Top 50%", type: "topHalf" as const },
+                          { id: "bottomHalf", label: "Bottom 50%", type: "bottomHalf" as const },
+                          { id: "leftHalf", label: "Left 50%", type: "leftHalf" as const },
+                          { id: "rightHalf", label: "Right 50%", type: "rightHalf" as const },
+                        ].map((preset) => (
+                          <button
+                            key={preset.id}
+                            type="button"
+                            onClick={() => applyCropPreset(preset.type)}
+                            className="py-1 px-1.5 bg-[#161B22] hover:bg-[#1C2128] border border-[#30363D] hover:border-cyan-500/50 text-[#8B949E] hover:text-white rounded text-[10px] font-mono transition text-center cursor-pointer"
+                          >
+                            {preset.label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Manual Coordinate Sliders for fine-tuning */}
+                  <div className="space-y-2 border-t md:border-t-0 md:border-l border-[#30363D] pt-3 md:pt-0 md:pl-4">
+                    <span className="text-[10px] font-bold text-white uppercase tracking-wider flex items-center gap-1">
+                      <Sliders className="h-3 w-3 text-cyan-400" />
+                      <span>Coordinate Fine-Tuning</span>
+                    </span>
+
+                    <div className="grid grid-cols-2 gap-2 text-[10px]">
+                      {/* Horizontal Pos X */}
+                      <div className="space-y-1 bg-[#161B22] p-2 rounded border border-[#30363D]">
+                        <div className="flex justify-between text-[#8B949E]">
+                          <span>X Offset</span>
+                          <span className="text-white font-bold">{cropRect.x.toFixed(0)}%</span>
+                        </div>
+                        <input
+                          type="range"
+                          min="0"
+                          max={Math.max(0, 100 - cropRect.width)}
+                          value={cropRect.x}
+                          onChange={(e) => {
+                            setCropEnabled(true);
+                            setCropRect(prev => ({ ...prev, x: Number(e.target.value) }));
+                          }}
+                          className="w-full accent-cyan-400 h-1 bg-[#0D1117] rounded-lg cursor-pointer"
+                        />
+                      </div>
+
+                      {/* Vertical Pos Y */}
+                      <div className="space-y-1 bg-[#161B22] p-2 rounded border border-[#30363D]">
+                        <div className="flex justify-between text-[#8B949E]">
+                          <span>Y Offset</span>
+                          <span className="text-white font-bold">{cropRect.y.toFixed(0)}%</span>
+                        </div>
+                        <input
+                          type="range"
+                          min="0"
+                          max={Math.max(0, 100 - cropRect.height)}
+                          value={cropRect.y}
+                          onChange={(e) => {
+                            setCropEnabled(true);
+                            setCropRect(prev => ({ ...prev, y: Number(e.target.value) }));
+                          }}
+                          className="w-full accent-cyan-400 h-1 bg-[#0D1117] rounded-lg cursor-pointer"
+                        />
+                      </div>
+
+                      {/* Crop Width */}
+                      <div className="space-y-1 bg-[#161B22] p-2 rounded border border-[#30363D]">
+                        <div className="flex justify-between text-[#8B949E]">
+                          <span>Width</span>
+                          <span className="text-white font-bold">{cropRect.width.toFixed(0)}%</span>
+                        </div>
+                        <input
+                          type="range"
+                          min="10"
+                          max={100 - cropRect.x}
+                          value={cropRect.width}
+                          onChange={(e) => {
+                            setCropEnabled(true);
+                            setCropRect(prev => ({ ...prev, width: Number(e.target.value) }));
+                          }}
+                          className="w-full accent-cyan-400 h-1 bg-[#0D1117] rounded-lg cursor-pointer"
+                        />
+                      </div>
+
+                      {/* Crop Height */}
+                      <div className="space-y-1 bg-[#161B22] p-2 rounded border border-[#30363D]">
+                        <div className="flex justify-between text-[#8B949E]">
+                          <span>Height</span>
+                          <span className="text-white font-bold">{cropRect.height.toFixed(0)}%</span>
+                        </div>
+                        <input
+                          type="range"
+                          min="10"
+                          max={100 - cropRect.y}
+                          value={cropRect.height}
+                          onChange={(e) => {
+                            setCropEnabled(true);
+                            setCropRect(prev => ({ ...prev, height: Number(e.target.value) }));
+                          }}
+                          className="w-full accent-cyan-400 h-1 bg-[#0D1117] rounded-lg cursor-pointer"
+                        />
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Modal Footer */}
+              <div className="bg-[#1C2128] px-5 py-3 border-t border-[#30363D] flex items-center justify-between">
+                <button
+                  type="button"
+                  onClick={() => applyCropPreset("full")}
+                  className="px-3 py-1.5 bg-[#0D1117] hover:bg-[#161B22] text-[#8B949E] hover:text-white border border-[#30363D] rounded text-xs font-mono font-bold uppercase transition cursor-pointer"
+                >
+                  Reset (Full Screen)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowCropModal(false)}
+                  className="px-5 py-1.5 bg-cyan-600 hover:bg-cyan-500 text-white rounded text-xs font-mono font-bold uppercase tracking-wider transition cursor-pointer flex items-center gap-1.5 shadow"
+                >
+                  <Check className="h-3.5 w-3.5" />
+                  <span>Done / Apply Crop</span>
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
 
     </div>
   );
