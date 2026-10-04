@@ -1,0 +1,29 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Config document rules - anyone can read, anyone can write
+    match /configs/{configId} {
+      allow read, write: if true;
+    }
+
+    // Active visitors presence tracking rules - anyone can read, write
+    match /active_visitors/{visitorId} {
+      allow read, write: if true;
+    }
+
+    // Real-time chat channel rules - anyone can read, write
+    match /chats/{chatId} {
+      allow read, write: if true;
+    }
+
+    // Direct WebRTC signaling peers rules - anyone can read, write
+    match /signaling_peers/{peerId} {
+      allow read, write: if true;
+    }
+
+    // Registered users - anyone can read, write for custom login/registration flow
+    match /registered_users/{userId} {
+      allow read, write: if true;
+    }
+  }
+}

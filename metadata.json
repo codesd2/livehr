@@ -1,0 +1,6 @@
+{
+  "name": "Admin-Protected Iframe Portal",
+  "description": "A secure web portal presenting a protected iframe that requires visitors to enter a password, with an admin panel to change the configuration.",
+  "requestFramePermissions": ["camera", "microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

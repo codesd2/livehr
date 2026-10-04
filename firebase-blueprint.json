@@ -1,0 +1,183 @@
+{
+  "entities": {
+    "Config": {
+      "title": "Portal Configuration",
+      "description": "System wide configuration specifying the target iframe URL and access passcodes.",
+      "type": "object",
+      "properties": {
+        "iframeUrl": {
+          "type": "string",
+          "description": "The URL of the embedded page."
+        },
+        "visitorPassword": {
+          "type": "string",
+          "description": "Passcode required for visitor access."
+        },
+        "adminUsername": {
+          "type": "string",
+          "description": "Username required to edit settings."
+        },
+        "adminPassword": {
+          "type": "string",
+          "description": "Passcode required to edit settings."
+        },
+        "overlayEnabled": {
+          "type": "boolean",
+          "description": "True if floating overlay is active during screen share."
+        },
+        "overlayText": {
+          "type": "string",
+          "description": "Optional text to float over screen share."
+        },
+        "overlayImageUrl": {
+          "type": "string",
+          "description": "Optional image URL to float over screen share."
+        },
+        "overlayPosition": {
+          "type": "string",
+          "description": "Placement of the overlay: e.g. top-left, top-right, bottom-left, bottom-right, center, or floating-animate."
+        },
+        "overlayOpacity": {
+          "type": "integer",
+          "description": "Opacity of the overlay (0 to 100)."
+        },
+        "overlayScale": {
+          "type": "integer",
+          "description": "Scale of the overlay in percent (50 to 200)."
+        },
+        "isLive": {
+          "type": "boolean",
+          "description": "True if the live broadcast is running."
+        },
+        "liveStreamType": {
+          "type": "string",
+          "description": "The type of the live stream."
+        },
+        "liveStreamTitle": {
+          "type": "string",
+          "description": "The live stream custom title."
+        },
+        "streamStartedAt": {
+          "type": "integer",
+          "description": "Unix timestamp of when the session started."
+        },
+        "tipsHtml": {
+          "type": "string",
+          "description": "The custom HTML/text tips content."
+        }
+      },
+      "required": ["iframeUrl"]
+    },
+    "ActiveVisitor": {
+      "title": "Active Visitor",
+      "description": "Track live viewer count and session presence metadata in real-time.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "role": {
+          "type": "string"
+        },
+        "lastActive": {
+          "type": "integer"
+        }
+      },
+      "required": ["id", "role", "lastActive"]
+    },
+    "ChatMessage": {
+      "title": "Chat Message",
+      "description": "Messages sent during the live screen sharing session.",
+      "type": "object",
+      "properties": {
+        "senderName": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        },
+        "timestamp": {
+          "type": "integer"
+        },
+        "role": {
+          "type": "string"
+        }
+      },
+      "required": ["senderName", "text", "timestamp", "role"]
+    },
+    "SignalingPeer": {
+      "title": "Signaling Peer",
+      "description": "WebRTC signaling state documents for direct stream peers.",
+      "type": "object",
+      "properties": {
+        "status": {
+          "type": "string"
+        },
+        "offer": {
+          "type": "object"
+        },
+        "answer": {
+          "type": "object"
+        },
+        "hostCandidates": {
+          "type": "array"
+        },
+        "viewerCandidates": {
+          "type": "array"
+        }
+      },
+      "required": []
+    },
+    "RegisteredUser": {
+      "title": "Registered User",
+      "description": "User account for gate authorization using username and password.",
+      "type": "object",
+      "properties": {
+        "username": {
+          "type": "string"
+        },
+        "phoneNumber": {
+          "type": "string"
+        },
+        "password": {
+          "type": "string"
+        },
+        "isAuthorized": {
+          "type": "boolean"
+        },
+        "screenShareAccess": {
+          "type": "boolean"
+        },
+        "tipsAccess": {
+          "type": "boolean"
+        },
+        "createdAt": {
+          "type": "integer"
+        }
+      },
+      "required": ["username", "password", "isAuthorized", "screenShareAccess", "tipsAccess", "createdAt"]
+    }
+  },
+  "firestore": {
+    "configs/{configId}": {
+      "schema": "Config",
+      "description": "A collection containing system configuration documents."
+    },
+    "active_visitors/{visitorId}": {
+      "schema": "ActiveVisitor",
+      "description": "Temporary documents tracking presence of visitors and admins currently connected."
+    },
+    "chats/{chatId}": {
+      "schema": "ChatMessage",
+      "description": "A collection of messages posted to the real-time stream chat overlay."
+    },
+    "signaling_peers/{peerId}": {
+      "schema": "SignalingPeer",
+      "description": "WebRTC peer connection endpoints for sub-second screencast routing."
+    },
+    "registered_users/{userId}": {
+      "schema": "RegisteredUser",
+      "description": "User credentials and authorization status."
+    }
+  }
+}
